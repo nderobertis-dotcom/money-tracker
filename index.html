@@ -125,19 +125,26 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:12px 0
 
   <!-- MESE -->
   <section id="tab-month" class="hidden">
+    <div class="seg" id="periodSeg" style="margin-bottom:12px">
+      <button data-p="month" class="on">Mese</button>
+      <button data-p="year">Anno</button>
+      <button data-p="all">Totale</button>
+    </div>
     <div class="monthnav">
-      <button id="prevM" aria-label="Mese precedente">‹</button>
+      <button id="prevM" aria-label="Periodo precedente">‹</button>
       <b id="monthLbl"></b>
-      <button id="nextM" aria-label="Mese successivo">›</button>
+      <button id="nextM" aria-label="Periodo successivo">›</button>
     </div>
     <div class="card stats" id="monthStats"></div>
+    <div class="card"><h2 id="nwTitle">Patrimonio</h2><div id="nwBox"></div></div>
     <div class="card">
       <h2>Uscite per categoria</h2>
       <div id="monthCats"></div>
-      <p class="muted" style="margin:8px 0 0">Barra colorata: % del budget. Barra grigia: quota sul totale (nessun budget impostato).</p>
+      <p class="muted" id="budgetHint" style="margin:8px 0 0">Barra colorata: % del budget mensile. Barra grigia: quota sul totale.</p>
     </div>
-    <div class="card"><h2>Movimenti</h2><div id="monthList"></div></div>
-    <div class="card"><h2>Ultimi 6 mesi</h2><div id="trend"></div></div>
+    <div class="card"><h2>Entrate per categoria</h2><div id="monthInc"></div></div>
+    <div class="card" id="listCard"><h2>Movimenti</h2><div id="monthList"></div></div>
+    <div class="card"><h2 id="trendTitle">Andamento</h2><div id="trend"></div></div>
   </section>
 
   <!-- CONTI -->
@@ -149,8 +156,10 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:12px 0
 
   <!-- IMPOSTAZIONI -->
   <section id="tab-settings" class="hidden">
-    <div class="card"><h2>Categorie</h2><div id="catList"></div>
-      <div class="actions"><button id="addCat">+ Nuova categoria</button></div></div>
+    <div class="card"><h2>Categorie</h2>
+      <p class="muted" style="margin:0 0 4px">Una categoria si può eliminare solo se non è mai stata usata. Quelle usate si archiviano: spariscono dall'inserimento ma restano nello storico.</p>
+      <div id="catList"></div>
+      <div class="actions"><button id="addCatExp">+ Categoria di uscita</button><button id="addCatInc">+ Categoria di entrata</button></div></div>
     <div class="card"><h2>Ricorrenti</h2>
       <p class="muted" style="margin:0 0 6px">Vengono registrati in automatico ogni mese nel giorno indicato.</p>
       <div id="recList"></div>
@@ -171,7 +180,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:12px 0
 
 <nav class="tabs hidden" id="tabs">
   <button data-tab="add" class="on"><span class="i">➕</span>Aggiungi</button>
-  <button data-tab="month"><span class="i">📅</span>Mese</button>
+  <button data-tab="month"><span class="i">📊</span>Riepilogo</button>
   <button data-tab="accounts"><span class="i">🏦</span>Conti</button>
   <button data-tab="settings"><span class="i">⚙️</span>Impostazioni</button>
 </nav>
@@ -255,6 +264,7 @@ const S = {
   accounts: [], categories: [], recs: [],
   kind: 'expense', tab: 'add',
   month: new Date(now.getFullYear(), now.getMonth(), 1),
+  period: 'month', usage: { cat: {}, acc: {} },
   csvRows: null, busy: false
 };
 const catById = id => S.categories.find(c => c.id === id);
@@ -458,7 +468,7 @@ async function renderRecent() {
 }
 
 // ---------- dialog generico ----------
-function formDialog(title, fields, { deletable = false } = {}) {
+function formDialog(title, fields, { deletable = false, note = null } = {}) {
   return new Promise(resolve => {
     const dlg = $('#dlg'), f = $('#dlgForm');
     f.innerHTML = `<h2>${esc(title)}</h2>` + fields.map(fl => {
@@ -472,7 +482,7 @@ function formDialog(title, fields, { deletable = false } = {}) {
       return `<label for="${id}">${esc(fl.label)}</label><input id="${id}" name="${fl.name}" type="${type}"${
         fl.type === 'amount' ? ' inputmode="decimal"' : ''}${fl.type === 'number' ? ' inputmode="numeric"' : ''} value="${esc(fl.value ?? '')}"${
         fl.placeholder ? ` placeholder="${esc(fl.placeholder)}"` : ''} autocomplete="off">`;
-    }).join('') + `<div class="actions">${deletable ? '<button value="delete" class="danger">Elimina</button>' : ''}
+    }).join('') + (note ? `<p class="muted" style="margin:14px 0 0">${esc(note)}</p>` : '') + `<div class="actions">${deletable ? '<button value="delete" class="danger">Elimina</button>' : ''}
       <span class="sp"></span><button value="cancel" formnovalidate>Annulla</button><button value="save" class="primary">Salva</button></div>`;
     dlg.onclose = () => {
       const values = {};
@@ -520,81 +530,188 @@ async function editTx(id) {
   refreshTab();
 }
 
-// ---------- MESE ----------
-$('#prevM').onclick = () => { S.month = new Date(S.month.getFullYear(), S.month.getMonth() - 1, 1); renderMonth(); };
-$('#nextM').onclick = () => { S.month = new Date(S.month.getFullYear(), S.month.getMonth() + 1, 1); renderMonth(); };
+// ---------- RIEPILOGO (mese / anno / totale) ----------
+function periodRange() {
+  const m = S.month, y = m.getFullYear();
+  if (S.period === 'month')
+    return { start: ymd(m), end: ymd(new Date(y, m.getMonth() + 1, 1)),
+             label: m.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) };
+  if (S.period === 'year') return { start: `${y}-01-01`, end: `${y + 1}-01-01`, label: String(y) };
+  return { start: null, end: null, label: 'Dall\'inizio' };
+}
+const stepPeriod = d => {
+  const n = S.period === 'year' ? 12 * d : d;
+  S.month = new Date(S.month.getFullYear(), S.month.getMonth() + n, 1);
+  renderMonth();
+};
+$('#prevM').onclick = () => stepPeriod(-1);
+$('#nextM').onclick = () => stepPeriod(1);
+$('#periodSeg').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.period = b.dataset.p; renderMonth();
+};
+
+// saldo di ogni conto considerando i movimenti con data < before (null = tutti)
+function balancesAt(all, before) {
+  const b = Object.fromEntries(S.accounts.map(a => [a.id, +a.initial_balance]));
+  for (const t of all) {
+    if (before && t.date >= before) continue;
+    const v = +t.amount;
+    if (t.kind === 'income') b[t.account_id] += v;
+    else if (t.kind === 'expense') b[t.account_id] -= v;
+    else { b[t.account_id] -= v; b[t.to_account_id] += v; }
+  }
+  return b;
+}
+const sumVals = o => Object.values(o).reduce((s, v) => s + v, 0);
+
+function catRows(kind, by, total, useBudget) {
+  const rows = S.categories.filter(c => c.kind === kind)
+    .map(c => ({ c, v: by[c.id] || 0, b: useBudget && c.monthly_budget != null ? +c.monthly_budget : null }))
+    .filter(r => r.v > 0 || (r.b && !r.c.archived));
+  if (by['']) rows.push({ c: { icon: '•', name: 'Senza categoria' }, v: by[''], b: null });
+  if (!rows.length) return `<p class="muted">Nessuna ${kind === 'expense' ? 'uscita' : 'entrata'} nel periodo.</p>`;
+  rows.sort((a, b) => b.v - a.v);
+  const cls = kind === 'expense' ? 'neg' : 'pos';
+  return rows.map(r => {
+    const pct = r.b ? Math.min(100, r.v / r.b * 100) : (total ? r.v / total * 100 : 0);
+    const bar = r.b ? (r.v > r.b ? ' over' : '') : ' share';
+    const extra = r.b ? ` <span class="muted">/ ${money(r.b)}</span>`
+                      : (total ? ` <span class="muted">${Math.round(r.v / total * 100)}%</span>` : '');
+    return `<div class="row"><span class="ic">${esc(r.c.icon)}</span><div class="grow">
+      <div class="split"><span class="t">${esc(r.c.name)}</span><span class="amt">${money(r.v)}${extra}</span></div>
+      <div class="bar${bar}"><div style="width:${pct.toFixed(1)}%"></div></div></div></div>`;
+  }).join('') + `<div class="split" style="padding-top:10px;font-weight:600"><span>Totale</span><span class="amt ${cls}">${money(total)}</span></div>`;
+}
 
 async function renderMonth() {
-  const m = S.month;
-  const start = ymd(m), end = ymd(new Date(m.getFullYear(), m.getMonth() + 1, 1));
-  $('#monthLbl').textContent = m.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
-  const tx = await fetchAll(() => sb.from('transactions').select('*').gte('date', start).lt('date', end)
-    .order('date', { ascending: false }).order('created_at', { ascending: false }));
+  const { start, end, label } = periodRange();
+  const hasNav = S.period !== 'all';
+  document.querySelectorAll('#periodSeg button').forEach(b => b.classList.toggle('on', b.dataset.p === S.period));
+  $('#monthLbl').textContent = label;
+  $('#prevM').style.visibility = $('#nextM').style.visibility = hasNav ? 'visible' : 'hidden';
+
+  const txAll = await fetchAll(() => sb.from('transactions').select('*')
+    .order('date', { ascending: false }).order('created_at', { ascending: false }).order('id'));
+  const tx = txAll.filter(t => (!start || t.date >= start) && (!end || t.date < end));
 
   let inc = 0, exp = 0;
-  const byCat = {};
+  const byExp = {}, byInc = {};
   for (const t of tx) {
-    if (t.kind === 'income') inc += +t.amount;
-    if (t.kind === 'expense') { exp += +t.amount; const k = t.category_id || ''; byCat[k] = (byCat[k] || 0) + +t.amount; }
+    const k = t.category_id || '';
+    if (t.kind === 'income') { inc += +t.amount; byInc[k] = (byInc[k] || 0) + +t.amount; }
+    if (t.kind === 'expense') { exp += +t.amount; byExp[k] = (byExp[k] || 0) + +t.amount; }
   }
-  const bal = inc - exp;
+  const sav = inc - exp;
   $('#monthStats').innerHTML =
     `<div><span class="muted">Entrate</span><b class="pos">${money(inc)}</b></div>
      <div><span class="muted">Uscite</span><b class="neg">${money(exp)}</b></div>
-     <div><span class="muted">Risparmio</span><b class="${bal < 0 ? 'neg' : 'pos'}">${money(bal)}</b></div>`;
+     <div><span class="muted">Risparmio</span><b class="${sav < 0 ? 'neg' : 'pos'}">${money(sav)}</b></div>`;
 
-  const rows = S.categories.filter(c => c.kind === 'expense')
-    .map(c => ({ c, spent: byCat[c.id] || 0, budget: c.monthly_budget != null ? +c.monthly_budget : null }))
-    .filter(r => r.spent > 0 || (r.budget && !r.c.archived));
-  if (byCat['']) rows.push({ c: { icon: '•', name: 'Senza categoria' }, spent: byCat[''], budget: null });
-  rows.sort((a, b) => b.spent - a.spent);
-  const totBudget = rows.reduce((s, r) => s + (r.budget || 0), 0);
-  $('#monthCats').innerHTML = rows.length ? rows.map(r => {
-    const pct = r.budget ? Math.min(100, r.spent / r.budget * 100) : (exp ? r.spent / exp * 100 : 0);
-    const cls = r.budget ? (r.spent > r.budget ? ' over' : '') : ' share';
-    return `<div class="row"><span class="ic">${esc(r.c.icon)}</span><div class="grow">
-      <div class="split"><span class="t">${esc(r.c.name)}</span>
-      <span class="amt">${money(r.spent)}${r.budget ? ` <span class="muted">/ ${money(r.budget)}</span>` : ''}</span></div>
-      <div class="bar${cls}"><div style="width:${pct.toFixed(1)}%"></div></div></div></div>`;
-  }).join('') + (totBudget ? `<p class="muted" style="margin:8px 0 0">Budget totale: ${money(totBudget)}</p>` : '')
-    : '<p class="muted">Nessuna uscita questo mese.</p>';
+  // patrimonio: saldo dei conti all'inizio e alla fine del periodo
+  const today = ymd(new Date());
+  const closingDate = end && end <= today ? end : null;   // periodo concluso: saldo a fine periodo
+  const open = start ? balancesAt(txAll, start) : Object.fromEntries(S.accounts.map(a => [a.id, +a.initial_balance]));
+  const close = balancesAt(txAll, closingDate);
+  const delta = sumVals(close) - sumVals(open);
+  $('#nwTitle').textContent = closingDate ? 'Patrimonio a fine periodo' : 'Patrimonio attuale';
+  const accRows = S.accounts.filter(a => !a.archived || Math.abs(close[a.id]) > 0.004).map(a =>
+    `<div class="row"><div class="grow t">${esc(a.name)}${a.archived ? ' <span class="muted">(archiviato)</span>' : ''}</div>
+     <span class="muted" style="font-size:.8rem">${start ? money(open[a.id]) + ' →' : ''}</span>
+     <span class="amt${close[a.id] < 0 ? ' neg' : ''}">${money(close[a.id])}</span></div>`).join('');
+  $('#nwBox').innerHTML =
+    `<div class="split" style="align-items:baseline"><span class="amt" style="font-size:1.6rem">${money(sumVals(close))}</span>
+     <span class="amt ${delta < 0 ? 'neg' : 'pos'}">${delta >= 0 ? '+' : '−'}${money(Math.abs(delta))}</span></div>
+     <p class="muted" style="margin:2px 0 6px">${start ? `Variazione nel periodo (inizio: ${money(sumVals(open))})` : 'Variazione rispetto ai saldi iniziali'}</p>${accRows}`;
 
-  let html = '', cur = '';
-  for (const t of tx) {
-    if (t.date !== cur) {
-      cur = t.date;
-      html += `<div class="day">${parseYmd(cur).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>`;
+  $('#monthCats').innerHTML = catRows('expense', byExp, exp, S.period === 'month');
+  $('#budgetHint').classList.toggle('hidden', S.period !== 'month');
+  $('#monthInc').innerHTML = catRows('income', byInc, inc, false);
+
+  $('#listCard').classList.toggle('hidden', S.period !== 'month');
+  if (S.period === 'month') {
+    let html = '', cur = '';
+    for (const t of tx) {
+      if (t.date !== cur) {
+        cur = t.date;
+        html += `<div class="day">${parseYmd(cur).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })}</div>`;
+      }
+      html += txHtml(t, false);
     }
-    html += txHtml(t, false);
+    $('#monthList').innerHTML = html || '<p class="muted">Nessun movimento.</p>';
   }
-  $('#monthList').innerHTML = html || '<p class="muted">Nessun movimento.</p>';
-  await renderTrend();
+  renderTrend(txAll);
 }
 
-async function renderTrend() {
-  const from = new Date(S.month.getFullYear(), S.month.getMonth() - 5, 1);
-  const d = check(await sb.from('monthly_totals').select('*').gte('month', ymd(from)).lte('month', ymd(S.month)));
-  const map = Object.fromEntries(d.map(r => [r.month, r]));
-  const months = [...Array(6)].map((_, i) => new Date(from.getFullYear(), from.getMonth() + i, 1));
-  const max = Math.max(1, ...d.flatMap(r => [+r.income, +r.expense]));
-  $('#trend').innerHTML = `<div class="trend">${months.map((m, i) => {
-    const r = map[ymd(m)] || {}, inc = +r.income || 0, exp = +r.expense || 0;
-    return `<div class="m${i === 5 ? ' cur' : ''}" title="Entrate ${money(inc)} · Uscite ${money(exp)}">
-      <div class="b"><div style="height:${inc / max * 100}%;background:var(--green)"></div>
-      <div style="height:${exp / max * 100}%;background:var(--red)"></div></div>
-      <span class="l">${m.toLocaleDateString('it-IT', { month: 'short' })}</span></div>`;
+function renderTrend(txAll) {
+  const buckets = [];
+  const y = S.month.getFullYear();
+  if (S.period === 'month') {
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(y, S.month.getMonth() - i, 1);
+      buckets.push({ key: ymd(d).slice(0, 7), label: d.toLocaleDateString('it-IT', { month: 'short' }), cur: i === 0 });
+    }
+    $('#trendTitle').textContent = 'Ultimi 6 mesi';
+  } else if (S.period === 'year') {
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(y, i, 1);
+      buckets.push({ key: ymd(d).slice(0, 7), label: d.toLocaleDateString('it-IT', { month: 'narrow' }), cur: false });
+    }
+    $('#trendTitle').textContent = `Mesi del ${y}`;
+  } else {
+    const years = txAll.map(t => +t.date.slice(0, 4));
+    const y0 = years.length ? Math.min(...years) : new Date().getFullYear();
+    const y1 = Math.max(new Date().getFullYear(), ...years);
+    for (let yy = Math.max(y0, y1 - 5); yy <= y1; yy++) buckets.push({ key: String(yy), label: String(yy), cur: false });
+    $('#trendTitle').textContent = 'Per anno';
+  }
+  const len = buckets[0].key.length;
+  const tot = Object.fromEntries(buckets.map(b => [b.key, { inc: 0, exp: 0 }]));
+  for (const t of txAll) {
+    const r = tot[t.date.slice(0, len)];
+    if (!r) continue;
+    if (t.kind === 'income') r.inc += +t.amount;
+    if (t.kind === 'expense') r.exp += +t.amount;
+  }
+  const max = Math.max(1, ...Object.values(tot).flatMap(r => [r.inc, r.exp]));
+  $('#trend').innerHTML = `<div class="trend">${buckets.map(b => {
+    const r = tot[b.key];
+    return `<div class="m${b.cur ? ' cur' : ''}" title="Entrate ${money(r.inc)} · Uscite ${money(r.exp)}">
+      <div class="b"><div style="height:${r.inc / max * 100}%;background:var(--green)"></div>
+      <div style="height:${r.exp / max * 100}%;background:var(--red)"></div></div>
+      <span class="l">${b.label}</span></div>`;
   }).join('')}</div><p class="muted" style="margin:8px 0 0">Verde: entrate · Rosso: uscite</p>`;
 }
 
+// ---------- utilizzo di conti e categorie (per consentire l'eliminazione) ----------
+async function loadUsage() {
+  const [tx, rec] = await Promise.all([
+    fetchAll(() => sb.from('transactions').select('category_id,account_id,to_account_id').order('id')),
+    fetchAll(() => sb.from('recurring').select('category_id,account_id').order('id'))
+  ]);
+  const cat = {}, acc = {};
+  const add = (m, k) => { if (k) m[k] = (m[k] || 0) + 1; };
+  tx.forEach(t => { add(cat, t.category_id); add(acc, t.account_id); add(acc, t.to_account_id); });
+  rec.forEach(r => { add(cat, r.category_id); add(acc, r.account_id); });
+  S.usage = { cat, acc };
+  return S.usage;
+}
+const usedLabel = n => n ? `${n} ${n === 1 ? 'movimento' : 'movimenti'}` : 'mai usato';
+const inUseNote = (n, what) => n
+  ? `${what} usat${what === 'Conto' ? 'o' : 'a'} in ${n} ${n === 1 ? 'movimento' : 'movimenti'} (inclusi i ricorrenti): non si può eliminare. Puoi archiviarl${what === 'Conto' ? 'o' : 'a'}.`
+  : null;
+
 // ---------- CONTI ----------
 async function renderAccounts() {
-  const bal = check(await sb.from('account_balances').select('*'));
+  const [res] = await Promise.all([sb.from('account_balances').select('*'), loadUsage()]);
+  const bal = check(res);
   const b = Object.fromEntries(bal.map(x => [x.id, +x.balance]));
   const total = activeAccs().reduce((s, a) => s + (b[a.id] ?? 0), 0);
   $('#netWorth').textContent = money(total);
   $('#netWorth').className = 'amt' + (total < 0 ? ' neg' : '');
   $('#accList').innerHTML = S.accounts.map(a => `<div class="row" data-acc="${a.id}"><div class="grow">
-      <div class="t">${esc(a.name)}${a.archived ? ' <span class="muted">(archiviato)</span>' : ''}</div></div>
+      <div class="t">${esc(a.name)}${a.archived ? ' <span class="muted">(archiviato)</span>' : ''}</div>
+      <div class="muted t">iniziale ${money(a.initial_balance)} · ${usedLabel(S.usage.acc[a.id])}</div></div>
       <span class="amt${(b[a.id] ?? 0) < 0 ? ' neg' : ''}">${money(b[a.id] ?? 0)}</span></div>`).join('')
     || '<p class="muted">Nessun conto.</p>';
 }
@@ -602,17 +719,20 @@ $('#accList').onclick = e => { const r = e.target.closest('.row[data-acc]'); if 
 $('#addAcc').onclick = () => editAccount(null);
 
 async function editAccount(a) {
+  const used = a ? ((await loadUsage()).acc[a.id] || 0) : 0;
   const fields = [
     { name: 'name', label: 'Nome', value: a?.name },
     { name: 'initial_balance', label: 'Saldo iniziale (al momento in cui inizi a tracciare)', type: 'amount', value: a ? amountStr(a.initial_balance) : '0' },
     { name: 'sort', label: 'Ordine', type: 'number', value: a?.sort ?? S.accounts.length + 1 }
   ];
   if (a) fields.push({ name: 'archived', label: 'Archiviato (nascosto dall\'inserimento)', type: 'checkbox', value: a.archived });
-  const r = await formDialog(a ? 'Modifica conto' : 'Nuovo conto', fields, { deletable: !!a });
+  const r = await formDialog(a ? 'Modifica conto' : 'Nuovo conto', fields,
+    { deletable: !!a && !used, note: a ? inUseNote(used, 'Conto') : null });
   if (r.action === 'delete') {
-    if (!confirm(`Eliminare il conto "${a.name}"?`)) return;
+    if (!confirm(`Eliminare definitivamente il conto "${a.name}"?`)) return;
     const { error } = await sb.from('accounts').delete().eq('id', a.id);
-    if (error) return toast('Il conto ha dei movimenti: archivialo invece di eliminarlo.');
+    if (error) return toast('Il conto è in uso: archivialo invece di eliminarlo.');
+    toast('Conto eliminato');
   } else if (r.action === 'save') {
     const v = r.values, ib = parseSigned(v.initial_balance);
     if (!v.name) return toast('Il nome è obbligatorio');
@@ -626,6 +746,7 @@ async function editAccount(a) {
 
 // ---------- IMPOSTAZIONI ----------
 async function renderSettings() {
+  await loadUsage();
   renderCats();
   fillAccSelect($('#csvAcc'), store.get('lastAccount'));
   await renderRecs();
@@ -635,42 +756,49 @@ function renderCats() {
   const group = (kind, title) => {
     const cats = S.categories.filter(c => c.kind === kind);
     return `<h3>${title}</h3>` + (cats.map(c => `<div class="row" data-cat="${c.id}"><span class="ic">${esc(c.icon)}</span>
-      <div class="grow t">${esc(c.name)}${c.archived ? ' <span class="muted">(archiviata)</span>' : ''}</div>
-      <span class="muted">${c.monthly_budget != null ? 'budget ' + money(c.monthly_budget) : ''}</span></div>`).join('')
+      <div class="grow"><div class="t">${esc(c.name)}${c.archived ? ' <span class="muted">(archiviata)</span>' : ''}</div>
+      <div class="muted t">${usedLabel(S.usage.cat[c.id])}${c.monthly_budget != null ? ' · budget ' + money(c.monthly_budget) : ''}</div></div></div>`).join('')
       || '<p class="muted">Nessuna.</p>');
   };
   $('#catList').innerHTML = group('expense', 'Uscite') + group('income', 'Entrate');
 }
 $('#catList').onclick = e => { const r = e.target.closest('.row[data-cat]'); if (r) editCat(catById(r.dataset.cat)); };
-$('#addCat').onclick = () => editCat(null);
+$('#addCatExp').onclick = () => editCat(null, 'expense');
+$('#addCatInc').onclick = () => editCat(null, 'income');
 
-async function editCat(c) {
-  const fields = [];
-  if (!c) fields.push({ name: 'kind', label: 'Tipo', type: 'select', value: 'expense', options: [['expense', 'Uscita'], ['income', 'Entrata']] });
-  fields.push(
+async function editCat(c, newKind) {
+  const kind = c ? c.kind : newKind;
+  const used = c ? ((await loadUsage()).cat[c.id] || 0) : 0;
+  const fields = [
     { name: 'icon', label: 'Icona (emoji)', value: c?.icon ?? '📦' },
-    { name: 'name', label: 'Nome', value: c?.name },
-    { name: 'monthly_budget', label: 'Budget mensile (vuoto = nessuno, solo uscite)', type: 'amount', value: c?.monthly_budget != null ? amountStr(c.monthly_budget) : '' },
-    { name: 'sort', label: 'Ordine', type: 'number', value: c?.sort ?? 99 }
-  );
+    { name: 'name', label: 'Nome', value: c?.name }
+  ];
+  if (kind === 'expense')
+    fields.push({ name: 'monthly_budget', label: 'Budget mensile (vuoto = nessuno)', type: 'amount', value: c?.monthly_budget != null ? amountStr(c.monthly_budget) : '' });
+  fields.push({ name: 'sort', label: 'Ordine', type: 'number', value: c?.sort ?? 99 });
   if (c) fields.push({ name: 'archived', label: 'Archiviata (nascosta dall\'inserimento)', type: 'checkbox', value: c.archived });
-  const r = await formDialog(c ? 'Modifica categoria' : 'Nuova categoria', fields, { deletable: !!c });
+  const title = `${c ? 'Modifica' : 'Nuova'} categoria di ${kind === 'expense' ? 'uscita' : 'entrata'}`;
+  const r = await formDialog(title, fields, { deletable: !!c && !used, note: c ? inUseNote(used, 'Categoria') : null });
   if (r.action === 'delete') {
-    if (!confirm('Eliminandola, i suoi movimenti resteranno "Senza categoria". Di solito conviene archiviarla. Procedere?')) return;
-    check(await sb.from('categories').delete().eq('id', c.id));
+    if (!confirm(`Eliminare definitivamente la categoria "${c.name}"?`)) return;
+    const { error } = await sb.from('categories').delete().eq('id', c.id);
+    if (error) return toast('La categoria è in uso: archiviala invece di eliminarla.');
+    toast('Categoria eliminata');
   } else if (r.action === 'save') {
-    const v = r.values, kind = c ? c.kind : v.kind;
+    const v = r.values;
     if (!v.name) return toast('Il nome è obbligatorio');
     let budget = null;
-    if (v.monthly_budget && kind === 'expense') {
+    if (kind === 'expense' && v.monthly_budget) {
       budget = parseAmount(v.monthly_budget);
       if (!budget) return toast('Budget non valido');
     }
     const row = { icon: v.icon || '•', name: v.name, monthly_budget: budget, sort: parseInt(v.sort, 10) || 0 };
-    if (c) { row.archived = v.archived; check(await sb.from('categories').update(row).eq('id', c.id)); }
-    else { row.kind = kind; check(await sb.from('categories').insert(row)); }
+    const { error } = c
+      ? await sb.from('categories').update({ ...row, archived: v.archived }).eq('id', c.id)
+      : await sb.from('categories').insert({ ...row, kind });
+    if (error) return toast(error.code === '23505' ? 'Esiste già una categoria con questo nome' : 'Errore: ' + error.message);
   } else return;
-  await loadRefs(); renderCats(); renderAddForm();
+  await loadRefs(); await renderSettings(); renderAddForm();
 }
 
 async function renderRecs() {
