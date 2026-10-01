@@ -38,7 +38,7 @@ label{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
 .chip .i{font-size:1.5rem}
 .chip:active{background:var(--line)}
 .chip.add{border-style:dashed;color:var(--muted)}
-.row[data-acc]::after,.row[data-cat]::after,.row[data-rec]::after{content:'›';color:var(--muted);font-size:1.4rem;line-height:1;margin-left:2px}
+.row[data-id]::after,.row[data-acc]::after,.row[data-cat]::after,.row[data-rec]::after{content:'›';color:var(--muted);font-size:1.4rem;line-height:1;margin-left:2px}
 input[readonly]{opacity:.6}
 .row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}
@@ -168,14 +168,6 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:12px 0
       <p class="muted" style="margin:0 0 6px">Vengono registrati in automatico ogni mese nel giorno indicato.</p>
       <div id="recList"></div>
       <div class="actions"><button id="addRec">+ Nuovo ricorrente</button></div></div>
-    <div class="card"><h2>Importa</h2>
-      <p class="muted" style="margin:0">Una riga per movimento: <code>data;importo;categoria;nota</code><br>
-        Es. <code>01/10;12,50;Spesa;Coop</code> — con <code>+</code> davanti all'importo è un'entrata.</p>
-      <label for="csv">Righe</label><textarea id="csv" placeholder="01/10;12,50;Spesa&#10;01/10;+1500;Stipendio"></textarea>
-      <label for="csvAcc">Conto</label><select id="csvAcc"></select>
-      <div class="actions"><button id="csvPreview">Anteprima</button><button id="csvImport" class="primary" disabled>Importa</button></div>
-      <div id="csvOut" class="muted" style="margin-top:10px"></div>
-    </div>
     <div class="card"><h2>Dati</h2>
       <div class="actions" style="margin-top:0"><button id="export">Esporta CSV</button><span class="sp"></span><button id="logout" class="danger">Esci</button></div>
     </div>
@@ -269,7 +261,7 @@ const S = {
   kind: 'expense', tab: 'add',
   month: new Date(now.getFullYear(), now.getMonth(), 1),
   period: 'month', usage: { cat: {}, acc: {} },
-  csvRows: null, busy: false
+  busy: false
 };
 const catById = id => S.categories.find(c => c.id === id);
 const accById = id => S.accounts.find(a => a.id === id);
@@ -755,7 +747,6 @@ async function editAccount(a) {
 async function renderSettings() {
   await loadUsage();
   renderCats();
-  fillAccSelect($('#csvAcc'), store.get('lastAccount'));
   await renderRecs();
 }
 
@@ -859,61 +850,6 @@ async function editRec(r) {
   } else return;
   await renderRecs();
 }
-
-// ---------- import ----------
-function validDate(y, m, d) {
-  const dt = new Date(y, m - 1, d);
-  return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d ? ymd(dt) : null;
-}
-function parseDateLoose(s) {
-  let m;
-  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return validDate(+m[1], +m[2], +m[3]);
-  if ((m = s.match(/^(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?$/))) {
-    let y = m[3] ? +m[3] : new Date().getFullYear();
-    if (y < 100) y += 2000;
-    return validDate(y, +m[2], +m[1]);
-  }
-  return null;
-}
-function parseCsv(text) {
-  const lists = { expense: S.categories.filter(c => c.kind === 'expense'), income: S.categories.filter(c => c.kind === 'income') };
-  const find = (list, n) => { n = n.toLowerCase(); return list.find(c => c.name.toLowerCase() === n) || list.find(c => c.name.toLowerCase().startsWith(n)); };
-  const rows = [], errors = [], unknown = new Set();
-  text.split(/\r?\n/).forEach((line, i) => {
-    line = line.trim();
-    if (!line) return;
-    const p = line.split(/[;\t]/).map(x => x.trim());
-    const date = parseDateLoose(p[0] || '');
-    if (!date) { if (i > 0) errors.push(`Riga ${i + 1}: data non valida`); return; } // la prima riga può essere un'intestazione
-    const raw = p[1] || '', kind = raw.startsWith('+') ? 'income' : 'expense';
-    const amount = parseAmount(raw);
-    if (!amount) { errors.push(`Riga ${i + 1}: importo non valido`); return; }
-    let cat = p[2] ? find(lists[kind], p[2]) : null;
-    if (!cat) { if (p[2]) unknown.add(p[2]); cat = find(lists[kind], 'altro'); }
-    rows.push({ date, kind, amount, category_id: cat?.id ?? null, note: p.slice(3).filter(Boolean).join(' ') || null });
-  });
-  return { rows, errors, unknown: [...unknown] };
-}
-$('#csv').oninput = () => { S.csvRows = null; $('#csvImport').disabled = true; $('#csvOut').textContent = ''; };
-$('#csvPreview').onclick = () => {
-  const { rows, errors, unknown } = parseCsv($('#csv').value);
-  const out = rows.reduce((s, r) => s + (r.kind === 'expense' ? r.amount : 0), 0);
-  const inn = rows.reduce((s, r) => s + (r.kind === 'income' ? r.amount : 0), 0);
-  $('#csvOut').innerHTML = `<b style="color:var(--text)">${rows.length} movimenti validi</b> · uscite ${money(out)} · entrate ${money(inn)}`
-    + (unknown.length ? `<br>Categorie non trovate (andranno in "Altro"): ${unknown.map(esc).join(', ')}` : '')
-    + (errors.length ? `<br>Scartate: ${errors.map(esc).join('; ')}` : '');
-  S.csvRows = rows;
-  $('#csvImport').disabled = !rows.length;
-};
-$('#csvImport').onclick = async () => {
-  const account_id = $('#csvAcc').value;
-  if (!S.csvRows?.length || !account_id) return;
-  if (!confirm(`Importare ${S.csvRows.length} movimenti su "${accById(account_id).name}"?`)) return;
-  const rows = S.csvRows.map(r => ({ ...r, account_id }));
-  for (let i = 0; i < rows.length; i += 500) check(await sb.from('transactions').insert(rows.slice(i, i + 500)));
-  toast(`${rows.length} movimenti importati`);
-  $('#csv').value = ''; $('#csvOut').textContent = ''; S.csvRows = null; $('#csvImport').disabled = true;
-};
 
 // ---------- export ----------
 $('#export').onclick = async () => {
