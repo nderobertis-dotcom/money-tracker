@@ -37,6 +37,9 @@ label{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
 .chip{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;font-size:.78rem;text-align:center;line-height:1.15}
 .chip .i{font-size:1.5rem}
 .chip:active{background:var(--line)}
+.chip.add{border-style:dashed;color:var(--muted)}
+.row[data-acc]::after,.row[data-cat]::after,.row[data-rec]::after{content:'›';color:var(--muted);font-size:1.4rem;line-height:1;margin-left:2px}
+input[readonly]{opacity:.6}
 .row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}
 .row[data-id],.row[data-acc],.row[data-cat],.row[data-rec]{cursor:pointer}
@@ -150,6 +153,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:.9rem;padding:12px 0
   <!-- CONTI -->
   <section id="tab-accounts" class="hidden">
     <div class="card"><h2>Patrimonio</h2><div id="netWorth" class="amt" style="font-size:1.7rem"></div><p class="muted" style="margin:4px 0 0">Somma dei conti attivi</p></div>
+    <p class="muted" style="margin:0 4px 8px">Tocca un conto per modificarne nome e saldo iniziale.</p>
     <div class="card"><h2>Conti</h2><div id="accList"></div>
       <div class="actions"><button id="addAcc">+ Nuovo conto</button></div></div>
   </section>
@@ -386,11 +390,14 @@ function renderAddForm() {
     const cats = S.categories.filter(c => c.kind === S.kind && !c.archived);
     $('#catGrid').innerHTML = cats.map(c =>
       `<button class="chip" data-id="${c.id}"><span class="i">${esc(c.icon)}</span>${esc(c.name)}</button>`).join('')
-      || '<p class="muted">Nessuna categoria: aggiungile in Impostazioni.</p>';
+      + '<button class="chip add" data-new="1"><span class="i">＋</span>Nuova voce</button>';
   }
 }
 $('#kindSeg').onclick = e => { const b = e.target.closest('button'); if (!b) return; S.kind = b.dataset.k; renderAddForm(); };
-$('#catGrid').onclick = e => { const b = e.target.closest('.chip'); if (b) quickSave(b.dataset.id); };
+$('#catGrid').onclick = e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  if (b.dataset.new) editCat(null, S.kind); else quickSave(b.dataset.id);
+};
 $('#amount').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 
 function nudge() {
@@ -481,7 +488,7 @@ function formDialog(title, fields, { deletable = false, note = null } = {}) {
       const type = fl.type === 'amount' ? 'text' : (fl.type || 'text');
       return `<label for="${id}">${esc(fl.label)}</label><input id="${id}" name="${fl.name}" type="${type}"${
         fl.type === 'amount' ? ' inputmode="decimal"' : ''}${fl.type === 'number' ? ' inputmode="numeric"' : ''} value="${esc(fl.value ?? '')}"${
-        fl.placeholder ? ` placeholder="${esc(fl.placeholder)}"` : ''} autocomplete="off">`;
+        fl.placeholder ? ` placeholder="${esc(fl.placeholder)}"` : ''}${fl.readonly ? ' readonly' : ''} autocomplete="off">`;
     }).join('') + (note ? `<p class="muted" style="margin:14px 0 0">${esc(note)}</p>` : '') + `<div class="actions">${deletable ? '<button value="delete" class="danger">Elimina</button>' : ''}
       <span class="sp"></span><button value="cancel" formnovalidate>Annulla</button><button value="save" class="primary">Salva</button></div>`;
     dlg.onclose = () => {
@@ -769,16 +776,19 @@ $('#addCatInc').onclick = () => editCat(null, 'income');
 async function editCat(c, newKind) {
   const kind = c ? c.kind : newKind;
   const used = c ? ((await loadUsage()).cat[c.id] || 0) : 0;
-  const fields = [
+  const fields = [];
+  if (c && !used) fields.push({ name: 'kind', label: 'Tipo', type: 'select', value: c.kind, options: [['expense', 'Uscita'], ['income', 'Entrata']] });
+  fields.push(
     { name: 'icon', label: 'Icona (emoji)', value: c?.icon ?? '📦' },
-    { name: 'name', label: 'Nome', value: c?.name }
-  ];
+    { name: 'name', label: used ? 'Nome (bloccato: voce già usata)' : 'Nome', value: c?.name, readonly: !!used }
+  );
   if (kind === 'expense')
     fields.push({ name: 'monthly_budget', label: 'Budget mensile (vuoto = nessuno)', type: 'amount', value: c?.monthly_budget != null ? amountStr(c.monthly_budget) : '' });
   fields.push({ name: 'sort', label: 'Ordine', type: 'number', value: c?.sort ?? 99 });
   if (c) fields.push({ name: 'archived', label: 'Archiviata (nascosta dall\'inserimento)', type: 'checkbox', value: c.archived });
   const title = `${c ? 'Modifica' : 'Nuova'} categoria di ${kind === 'expense' ? 'uscita' : 'entrata'}`;
-  const r = await formDialog(title, fields, { deletable: !!c && !used, note: c ? inUseNote(used, 'Categoria') : null });
+  const note = used ? `Usata in ${used} ${used === 1 ? 'movimento' : 'movimenti'}: nome e tipo non si possono cambiare e non si può eliminare. Puoi modificare icona, budget e ordine, o archiviarla.` : null;
+  const r = await formDialog(title, fields, { deletable: !!c && !used, note });
   if (r.action === 'delete') {
     if (!confirm(`Eliminare definitivamente la categoria "${c.name}"?`)) return;
     const { error } = await sb.from('categories').delete().eq('id', c.id);
@@ -786,15 +796,17 @@ async function editCat(c, newKind) {
     toast('Categoria eliminata');
   } else if (r.action === 'save') {
     const v = r.values;
+    const newKind = c && !used ? v.kind : kind;
+    if (used) v.name = c.name;
     if (!v.name) return toast('Il nome è obbligatorio');
     let budget = null;
-    if (kind === 'expense' && v.monthly_budget) {
+    if (newKind === 'expense' && v.monthly_budget) {
       budget = parseAmount(v.monthly_budget);
       if (!budget) return toast('Budget non valido');
     }
     const row = { icon: v.icon || '•', name: v.name, monthly_budget: budget, sort: parseInt(v.sort, 10) || 0 };
     const { error } = c
-      ? await sb.from('categories').update({ ...row, archived: v.archived }).eq('id', c.id)
+      ? await sb.from('categories').update({ ...row, kind: newKind, archived: v.archived }).eq('id', c.id)
       : await sb.from('categories').insert({ ...row, kind });
     if (error) return toast(error.code === '23505' ? 'Esiste già una categoria con questo nome' : 'Errore: ' + error.message);
   } else return;
